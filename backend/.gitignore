@@ -1,0 +1,37 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual environment
+venv/
+env/
+*.env
+*.venv
+pip-log.txt
+pip-delete-this-directory.txt
+
+# FastAPI specific
+instance/
+*.sqlite3
+*.db
+
+# Logs & Debug
+logs/
+*.log
+
+# VS Code settings
+.vscode/
+
+# Ignore FAISS index (if using FAISS)
+faiss_index/
+
+# Secret API keys
+.env
+.env.local
+GOOGLE_API_KEY
+
+# Ignore Docker stuff
+docker-compose.yml
+Dockerfile
