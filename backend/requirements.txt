@@ -3,10 +3,14 @@ uvicorn
 pydantic
 PyPDF2
 langchain
-langchain_community
+langchain-community
+langchain-core
+langchain-huggingface
+langsmith
 langchain_google_genai
 google-generativeai
 python-dotenv
 faiss-cpu
 sentence-transformers
 torch
+langchain-huggingface
