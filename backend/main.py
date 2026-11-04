@@ -1,21 +1,23 @@
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-import uvicorn
+
 import os
 import time
+from pathlib import Path
+
+import uvicorn
+from dotenv import load_dotenv
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 from PyPDF2 import PdfReader
-from langchain.text_splitter import RecursiveCharacterTextSplitter
+
+from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
-import google.generativeai as genai
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain.chains.question_answering import load_qa_chain
-from langchain.prompts import PromptTemplate
-from dotenv import load_dotenv
+from langchain_core.prompts import PromptTemplate
+
 
 load_dotenv()
-genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
 app = FastAPI()
 
@@ -62,8 +64,11 @@ def load_pdfs():
     return text
 
 def get_text_chunks(text):
-    """ Split text into chunks for embedding """
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
+    text_splitter = RecursiveCharacterTextSplitter(
+        chunk_size=2000,
+        chunk_overlap=400,
+        separators=["\n\n", "\n", ". ", " ", ""]
+    )
     return text_splitter.split_text(text)
 
 def create_vector_store():
@@ -91,86 +96,111 @@ create_vector_store()
 time.sleep(3)
 
 class QuestionRequest(BaseModel):
-    question: str
+    question: str = Field(min_length=1, max_length=2000)
+
 
 def get_answer(user_question):
-    """ Retrieve answer from FAISS index """
+    """Retrieve relevant documents and generate an answer using Gemini."""
     try:
-        print("🔍 Checking FAISS index file...")
-        
+        print("🔍 Loading FAISS index...")
+
         if not os.path.exists(f"{FAISS_INDEX_PATH}/index.faiss"):
-            print("❌ FAISS index file not found! Ensure it is created before querying.")
-            return "Apologies! The system is still initializing. Please try again in a few minutes."
+            return "The admission database is still initializing. Please try again shortly."
 
-        print("✅ FAISS index found! Loading FAISS...")
-        embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+        embeddings = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        )
 
-        try:
-            new_db = FAISS.load_local(FAISS_INDEX_PATH, embeddings, allow_dangerous_deserialization=True)
-            print("✅ FAISS index loaded successfully!")
-        except Exception as e:
-            print(f"❌ Error loading FAISS: {e}")
-            return f"❌ Error loading FAISS index: {e}"
+        new_db = FAISS.load_local(
+            FAISS_INDEX_PATH,
+            embeddings,
+            allow_dangerous_deserialization=True
+        )
 
-        print("🔍 Searching similar documents...")
-        docs = new_db.similarity_search(user_question)
-        print(f"✅ Retrieved {len(docs)} similar docs")
+        docs = new_db.similarity_search(user_question, k=8)
+
+        print("\n========== RETRIEVED DOCUMENTS ==========")
+
+        for i, doc in enumerate(docs, 1):
+            print(f"\n--- Document {i} ---")
+            print(doc.page_content[:1500])
+
+        print("\n=========================================\n")
 
         if not docs:
-            print("⚠️ No relevant documents found.")
-            return "Apologies! No relevant information found."
+            return "Refer to the official admission brochure for accurate details. Official contact email: pro@ipu.ac.in"
 
-        print("🤖 Generating AI response...")
-        model = ChatGoogleGenerativeAI(model="gemini-2.0-flash", temperature=0.3)
+        context = "\n\n".join(doc.page_content for doc in docs)
+
         prompt_template = """
-        You are an AI assistant specialized in answering queries about **GGSIPU Admissions**. Your responses must be **highly structured, well-formatted, and in clean Markdown** based strictly on the provided PDF documents.  
+You are an AI assistant specialized in GGSIPU admissions.
 
-        # 🛑 **STRICT RULES:**  
-        - **ONLY use information from the given PDFs**. Do NOT generate responses based on assumptions.  
-        - **DO NOT** add greetings, disclaimers, or extra text.  
-        - **DO NOT** start with anything except the direct answer.  
-        - **FORMAT the response in clear, structured Markdown** as per the guidelines below.  
+Answer the user's question strictly using the provided PDF context.
+Do not invent information or make assumptions.
+Use clear, structured Markdown.
 
-        # ✅ **MARKDOWN FORMAT GUIDELINES:**  
-        - `#` → **Main Topics**  
-        - `##` → **Subtopics**  
-        - `###` → **Detailed Sections**  
-        - `-` → **Bullet Points for clarity**  
-        - **Bold** → **For highlighting key terms**  
-        - Ensure **at least ONE blank line** between major sections for readability.  
+If the answer is not available in the context, respond:
+"Refer to the official admission brochure for accurate details."
+Official contact email: pro@ipu.ac.in
 
-        # 🚨 **MISSING INFORMATION HANDLING:**  
-        If the answer is **not available in the PDFs**, respond with:  
-        - **"Refer to the official admission brochure for accurate details."**  
-        - **Official contact email:** `pro@ipu.ac.in`  
-        - **DO NOT** guess, assume, or fabricate any information.  
+CONTEXT:
+{context}
 
-        - **If the gemini model hits rate limit or is down, then display this message:** `Too many requests are being processed by the server currently. We appreciate your patience.` 
+QUESTION:
+{question}
 
-        ---
+ANSWER:
+"""
 
-        # 📌 **CONTEXT (Extracted from PDFs):**  
-        {context}  
+        prompt = PromptTemplate(
+            template=prompt_template,
+            input_variables=["context", "question"]
+        )
 
-        # 📌 **USER QUERY:**  
-        {question}  
+        formatted_prompt = prompt.format(
+            context=context,
+            question=user_question
+        )
 
-        # 📌 **STRUCTURED ANSWER:**  
-        
+        # Initialize Gemini BEFORE invoking it.
+        model = ChatGoogleGenerativeAI(
+            model="gemini-3.5-flash-lite",
+            timeout=60,
+            max_retries=3
+        )
 
-        """
+        print("🤖 Sending request to Gemini...")
+        response = model.invoke(formatted_prompt)
 
-        prompt = PromptTemplate(template=prompt_template, input_variables=["context", "question"])
-        chain = load_qa_chain(model, chain_type="stuff", prompt=prompt)
+        print("========== GEMINI DEBUG ==========")
+        print("Response type:", type(response))
+        print("Response content:", repr(response.content))
+        print("Additional kwargs:", repr(response.additional_kwargs))
+        print("Response metadata:", repr(response.response_metadata))
+        print("==================================")
 
-        response = chain({"input_documents": docs, "question": user_question}, return_only_outputs=True)
-        print("✅ AI Response Generated!")
+        answer = response.content
 
-        return response["output_text"]
+        if isinstance(answer, str) and answer.strip():
+            return answer.strip()
 
-    except Exception as e:
-        print(f"❌ Error retrieving answer: {e}")
-        return f"❌ Error: {e}"
+        if isinstance(answer, list):
+            text_parts = [
+                item.get("text", "")
+                for item in answer
+                if isinstance(item, dict)
+            ]
+            answer = "\n".join(text_parts).strip()
+
+            if answer:
+                return answer
+
+        print("The model returned an empty or unexpected response.")
+        return "The assistant could not generate an answer. Please try again."
+
+    except Exception:
+        logging.exception("Admission question processing failed")
+        return "The admission assistant is temporarily unavailable. Please try again shortly."
 
 
 @app.post("/ask")
