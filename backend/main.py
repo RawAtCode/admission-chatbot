@@ -1,4 +1,3 @@
-
 import logging
 import os
 from contextlib import asynccontextmanager
@@ -14,7 +13,7 @@ from PyPDF2 import PdfReader
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.embeddings import FastEmbedEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -122,14 +121,15 @@ def get_text_chunks(documents):
 # --------------------------------------------------
 
 def initialize_embeddings():
-    """Initialize the HuggingFace embedding model."""
+    """Initialize lightweight ONNX-based embeddings."""
 
-    logger.info("Initializing embedding model: %s", EMBEDDING_MODEL)
+    logger.info("Initializing FastEmbed model: %s", EMBEDDING_MODEL)
 
-    return HuggingFaceEmbeddings(
+    return FastEmbedEmbeddings(
         model_name=EMBEDDING_MODEL,
+        threads=1,
+        batch_size=32,
     )
-
 
 # --------------------------------------------------
 # FAISS Vector Store
